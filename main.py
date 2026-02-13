@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
 import uvicorn
@@ -15,28 +15,40 @@ app.add_middleware(
 )
 
 async def buscar_scjn(query: str):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        # Importante: Usamos un User Agent común para no parecer robot
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-        page = await context.new_page()
-        
-        # Bloqueamos imágenes para velocidad extrema
-        await page.route("**/*.{png,jpg,jpeg,css,woff,woff2}", lambda route: route.abort())
-
-        resultados = []
-        try:
-            url = f"https://bj.scjn.gob.mx/busqueda?q={query}"
-            await page.goto(url, wait_until="domcontentloaded")
+    print(f"Iniciando busqueda para: {query}") # Log para debug
+    
+    # --- CORRECCIÓN CRÍTICA: Mover el try afuera para capturar error de inicio ---
+    try:
+        async with async_playwright() as p:
+            # --- CORRECCIÓN: Agregar argumentos anti-crash para servidor ---
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            )
             
-            # Esperar un poco a que cargue
-            try:
-                await page.wait_for_selector(".card, .mat-card", timeout=8000)
-            except:
-                pass
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
+            
+            # Bloqueamos recursos pesados
+            await page.route("**/*.{png,jpg,jpeg,css,woff,woff2,svg}", lambda route: route.abort())
 
-            # Extraer datos
+            resultados = []
+            
+            url = f"https://bj.scjn.gob.mx/busqueda?q={query}"
+            print(f"Navegando a: {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            
+            # Esperar carga visual (máximo 10s)
+            try:
+                await page.wait_for_selector(".card, .mat-card", timeout=10000)
+            except:
+                print("Tiempo de espera visual agotado, intentando leer lo que haya.")
+
+            # Extraer tarjetas
             tarjetas = await page.locator("app-item-tesis, .mat-card").all()
+            print(f"Tarjetas encontradas: {len(tarjetas)}")
             
             for i, card in enumerate(tarjetas[:6]):
                 texto = await card.inner_text()
@@ -47,7 +59,8 @@ async def buscar_scjn(query: str):
                 try:
                     btn = card.locator("text=Ver extractos")
                     if await btn.count() > 0:
-                        await btn.click(timeout=1000)
+                        await btn.click(timeout=2000)
+                        await page.wait_for_timeout(500) # Pequeña pausa
                         texto = await card.inner_text()
                 except:
                     pass
@@ -60,14 +73,21 @@ async def buscar_scjn(query: str):
                     "url": url
                 })
 
-        except Exception as e:
-            print(f"Error: {e}")
-            resultados.append({"id": "err", "titulo": "Error", "contenido": str(e), "fuente": "Sys", "url": "#"})
-        finally:
             await browser.close()
-    
-    return resultados
+            return resultados
+
+    except Exception as e:
+        print(f"ERROR CRÍTICO: {e}")
+        # Devolvemos un error "bonito" en JSON en lugar de romper el servidor
+        return [{
+            "id": "error", 
+            "titulo": "Error técnico en el servidor", 
+            "contenido": f"Detalles: {str(e)}", 
+            "fuente": "Sistema", 
+            "url": "#"
+        }]
 
 @app.get("/buscar")
 async def api_buscar(q: str):
-    return {"resultados": await buscar_scjn(q)}
+    data = await buscar_scjn(q)
+    return {"resultados": data}
