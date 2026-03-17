@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-playwright
 google-generativeai
 pydantic
 python-multipart
