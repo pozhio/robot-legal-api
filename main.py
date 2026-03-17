@@ -1,10 +1,12 @@
 import os
-from fastapi import FastAPI
+import io
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
 import uvicorn
 import google.generativeai as genai
-from pydantic import BaseModel
+import PyPDF2
+import docx
 
 app = FastAPI()
 
@@ -17,20 +19,41 @@ app.add_middleware(
 )
 
 # ==========================================
-# 1. CEREBRO DE INTELIGENCIA ARTIFICIAL
+# 1. CEREBRO DE INTELIGENCIA ARTIFICIAL (NUEVO CON ARCHIVOS)
 # ==========================================
 
-# Configurar la llave de Gemini (Render se la dará automáticamente)
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-class DocumentoRequest(BaseModel):
-    texto_documento: str
-    pregunta: str
+# Función para extraer el texto de los archivos
+async def extraer_texto_archivo(file: UploadFile):
+    contenido = await file.read()
+    texto = ""
+    
+    try:
+        if file.filename.lower().endswith('.pdf'):
+            lector_pdf = PyPDF2.PdfReader(io.BytesIO(contenido))
+            for pagina in lector_pdf.pages:
+                texto += pagina.extract_text() + "\n"
+                
+        elif file.filename.lower().endswith('.docx'):
+            documento = docx.Document(io.BytesIO(contenido))
+            for parrafo in documento.paragraphs:
+                texto += parrafo.text + "\n"
+        else:
+            texto = contenido.decode('utf-8')
+            
+        return texto
+    except Exception as e:
+        raise Exception(f"No se pudo leer el archivo: {str(e)}")
 
 @app.post("/analizar-documento")
-async def analizar_documento(req: DocumentoRequest):
-    print(f"Recibiendo documento para analizar. Pregunta: {req.pregunta}")
+async def analizar_documento(file: UploadFile = File(...), pregunta: str = Form(...)):
+    print(f"Recibiendo archivo: {file.filename} para responder: {pregunta}")
     try:
+        # Extraemos el texto del PDF o DOCX
+        texto_documento = await extraer_texto_archivo(file)
+        
+        # Le pasamos el texto a la IA con las reglas estrictas
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt_estricto = f"""
@@ -38,16 +61,16 @@ async def analizar_documento(req: DocumentoRequest):
         Tu ÚNICA tarea es responder a la pregunta del usuario utilizando EXCLUSIVAMENTE el documento proporcionado abajo. 
         
         REGLAS INQUEBRANTABLES:
-        1. NO uses conocimiento externo a este documento.
+        1. NO uses conocimiento externo a este documento bajo ninguna circunstancia.
         2. NO inventes información, artículos o leyes.
         3. Si la respuesta NO está claramente explicada en el texto del documento, debes responder EXACTAMENTE: "La información solicitada no se encuentra en el documento proporcionado."
         
         --- INICIO DEL DOCUMENTO ---
-        {req.texto_documento}
+        {texto_documento}
         --- FIN DEL DOCUMENTO ---
         
         PREGUNTA DEL USUARIO:
-        {req.pregunta}
+        {pregunta}
         """
         
         response = model.generate_content(prompt_estricto)
@@ -58,7 +81,7 @@ async def analizar_documento(req: DocumentoRequest):
         return {"error": str(e)}
 
 # ==========================================
-# 2. BUSCADOR DE LA SCJN (El que ya tenías)
+# 2. BUSCADOR DE LA SCJN
 # ==========================================
 
 async def buscar_scjn(query: str):
