@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
 import uvicorn
+import google.generativeai as genai
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -13,6 +15,51 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==========================================
+# 1. CEREBRO DE INTELIGENCIA ARTIFICIAL
+# ==========================================
+
+# Configurar la llave de Gemini (Render se la dará automáticamente)
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+
+class DocumentoRequest(BaseModel):
+    texto_documento: str
+    pregunta: str
+
+@app.post("/analizar-documento")
+async def analizar_documento(req: DocumentoRequest):
+    print(f"Recibiendo documento para analizar. Pregunta: {req.pregunta}")
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        prompt_estricto = f"""
+        Eres un asistente legal experto y estricto de la plataforma Lex Compliance de México. 
+        Tu ÚNICA tarea es responder a la pregunta del usuario utilizando EXCLUSIVAMENTE el documento proporcionado abajo. 
+        
+        REGLAS INQUEBRANTABLES:
+        1. NO uses conocimiento externo a este documento.
+        2. NO inventes información, artículos o leyes.
+        3. Si la respuesta NO está claramente explicada en el texto del documento, debes responder EXACTAMENTE: "La información solicitada no se encuentra en el documento proporcionado."
+        
+        --- INICIO DEL DOCUMENTO ---
+        {req.texto_documento}
+        --- FIN DEL DOCUMENTO ---
+        
+        PREGUNTA DEL USUARIO:
+        {req.pregunta}
+        """
+        
+        response = model.generate_content(prompt_estricto)
+        return {"respuesta": response.text}
+
+    except Exception as e:
+        print(f"Error en IA: {e}")
+        return {"error": str(e)}
+
+# ==========================================
+# 2. BUSCADOR DE LA SCJN (El que ya tenías)
+# ==========================================
 
 async def buscar_scjn(query: str):
     print(f"Iniciando busqueda para: {query}")
@@ -27,7 +74,6 @@ async def buscar_scjn(query: str):
             )
             page = await context.new_page()
             
-            # Bloqueamos recursos pesados para velocidad
             await page.route("**/*.{png,jpg,jpeg,css,woff,woff2,svg}", lambda route: route.abort())
 
             resultados = []
@@ -35,16 +81,10 @@ async def buscar_scjn(query: str):
             print(f"Navegando a: {url}")
             
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            
-            # --- LA SOLUCIÓN: PAUSA OBLIGATORIA DE 5 SEGUNDOS ---
-            # Dejamos que Angular termine de traer las sentencias de la base de datos
             await page.wait_for_timeout(5000)
             
-            # Buscamos con selectores amplios por si cambiaron el código de la SCJN
             tarjetas = await page.locator("mat-card, app-item-tesis, .mat-card, .card").all()
-            print(f"Tarjetas encontradas: {len(tarjetas)}")
             
-            # El diagnóstico (por si acaso)
             if len(tarjetas) == 0:
                 texto_pagina = await page.inner_text("body")
                 return [{
@@ -55,12 +95,10 @@ async def buscar_scjn(query: str):
                     "url": url
                 }]
 
-            # Extraemos la información
             for i, card in enumerate(tarjetas[:6]):
                 texto = await card.inner_text()
                 lines = texto.split('\n')
                 
-                # Intentamos buscar un título razonable
                 titulo = "Resultado de la SCJN"
                 for line in lines:
                     if len(line) > 15 and line.isupper():
@@ -70,12 +108,11 @@ async def buscar_scjn(query: str):
                         titulo = line
                         break
                 
-                # Clic en "Ver extractos"
                 try:
                     btn = card.locator("text=Ver extractos")
                     if await btn.count() > 0:
                         await btn.click(timeout=2000)
-                        await page.wait_for_timeout(1000) # Espera a que baje el texto
+                        await page.wait_for_timeout(1000)
                         texto = await card.inner_text()
                 except:
                     pass
