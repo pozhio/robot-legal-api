@@ -53,7 +53,7 @@ async def analizar_documento(file: UploadFile = File(...), pregunta: str = Form(
         texto_documento = await extraer_texto_archivo(file)
         
         # Le pasamos el texto a la IA con las reglas estrictas
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt_estricto = f"""
         Eres un asistente legal experto y estricto de la plataforma Lex Compliance de México. 
