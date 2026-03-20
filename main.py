@@ -1,8 +1,8 @@
 import os
 import io
+import gc # NUEVA LIBRERÍA: El Triturador Digital
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 import google.generativeai as genai
 import PyPDF2
 import docx
@@ -39,42 +39,46 @@ async def extraer_texto_archivo(file: UploadFile):
     except Exception as e:
         raise Exception(f"No se pudo leer {file.filename}: {str(e)}")
 
-# AQUI ESTA LA MAGIA: Recibimos una lista de archivos
 @app.post("/analizar-documento")
 async def analizar_documento(archivos: List[UploadFile] = File(...), pregunta: str = Form(...)):
-    print(f"Recibiendo {len(archivos)} archivos para responder: {pregunta}")
+    print(f"Analizando {len(archivos)} archivos de forma segura.")
     try:
         texto_total_documentos = ""
         
-        # Juntamos todos los textos separándolos por su nombre de archivo
         for archivo in archivos:
             texto_extraido = await extraer_texto_archivo(archivo)
-            texto_total_documentos += f"\n\n--- INICIO DEL DOCUMENTO: {archivo.filename} ---\n"
-            texto_total_documentos += texto_extraido
-            texto_total_documentos += f"\n--- FIN DEL DOCUMENTO: {archivo.filename} ---\n"
+            texto_total_documentos += f"\n\n--- INICIO DEL DOCUMENTO: {archivo.filename} ---\n{texto_extraido}\n--- FIN DEL DOCUMENTO: {archivo.filename} ---\n"
         
-        # Usamos el modelo más nuevo
         model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt_estricto = f"""
-        Eres un asistente legal experto y estricto de la plataforma Lex Compliance de México. 
-        Tu ÚNICA tarea es responder a la pregunta del usuario utilizando EXCLUSIVAMENTE los documentos proporcionados abajo. 
+        Eres un asistente legal experto de Lex Compliance de México. 
+        Responde ÚNICAMENTE usando los documentos proporcionados. Si la respuesta no está, di: "La información no se encuentra en los documentos." Menciona siempre la fuente.
         
-        REGLAS INQUEBRANTABLES:
-        1. NO uses conocimiento externo bajo ninguna circunstancia.
-        2. NO inventes información, artículos o leyes.
-        3. Si la respuesta NO está en los documentos, responde EXACTAMENTE: "La información solicitada no se encuentra en los documentos proporcionados."
-        4. Cuando respondas, menciona siempre de qué documento (nombre del archivo) sacaste la información.
-        
-        DOCUMENTOS DE REFERENCIA:
+        DOCUMENTOS:
         {texto_total_documentos}
         
-        PREGUNTA DEL USUARIO:
+        PREGUNTA:
         {pregunta}
         """
         
         response = model.generate_content(prompt_estricto)
-        return {"respuesta": response.text}
+        respuesta_final = response.text
+
+        # ==========================================
+        # EL TRITURADOR DIGITAL (BLINDAJE DE MEMORIA)
+        # ==========================================
+        texto_total_documentos = ""
+        prompt_estricto = ""
+        texto_extraido = ""
+        del texto_total_documentos
+        del prompt_estricto
+        del texto_extraido
+        del archivos
+        gc.collect() # Fuerza la limpieza inmediata de la RAM
+        # ==========================================
+
+        return {"respuesta": respuesta_final}
 
     except Exception as e:
         print(f"Error en IA: {e}")
